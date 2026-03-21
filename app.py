@@ -2,79 +2,96 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import google.generativeai as genai
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# --- 配置 Gemini API ---
-# 在 Streamlit Cloud 中，请在 Settings -> Secrets 中添加 GEMINI_API_KEY
+# --- 1. 安全配置 API Key ---
+# 建议通过 Streamlit Secrets 配置 GEMINI_API_KEY
+# 如果你一定要直接写死在代码里（风险自担），请取消下面一行的注释并填入：
+# API_KEY_VALUE = "你的_API_KEY" 
 try:
-    api_key = st.secrets["GEMINI_API_KEY"]
-    genai.configure(api_key=AIzaSyDuSpTdovgIq3EzSFnzmlDFK3EQ1pSAgzs)
+    # 优先尝试从 Streamlit Secrets 获取
+    api_key = st.secrets.get("GEMINI_API_KEY", "这里填入你的API_KEY(如果不走Secrets)")
+    genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-1.5-flash')
-except:
-    st.error("请先在 Streamlit Secrets 或环境变量中配置 GEMINI_API_KEY")
+except Exception as e:
+    st.error(f"❌ API 配置失败: {e}")
 
-# --- 页面设置 ---
-st.set_page_config(page_title="石油与宏观经济分析助手", layout="wide")
-st.title("🛢️ 石油价格、CPI 与宏观政策影响分析")
+# --- 2. 页面美化设置 ---
+st.set_page_config(page_title="石油-CPI宏观决策系统", layout="wide")
+st.title("📊 石油价格与美国宏观经济分析系统")
+st.markdown("---")
 
-# --- 1. 数据获取模块 ---
+# --- 3. 数据抓取模块 ---
 @st.cache_data(ttl=3600)
-def get_market_data():
-    # 获取 WTI 原油 (CL=F), 标普500能源板块 (XLE), 美元指数 (DX-Y.NYB)
-    tickers = {"WTI原油": "CL=F", "石油企业(XLE)": "XLE", "美元指数": "DX-Y.NYB"}
-    data = {}
-    for name, symbol in tickers.items():
-        df = yf.download(symbol, period="1mo", interval="1d")
-        data[name] = df
-    return data
+def fetch_financial_data():
+    # 抓取 WTI原油 (CL=F), 能源ETF (XLE), 美元指数 (DX-Y.NYB)
+    symbols = ["CL=F", "XLE", "DX-Y.NYB"]
+    df = yf.download(symbols, period="1mo", interval="1d", group_by='ticker')
+    return df
 
-data = get_market_data()
-
-# --- 2. 宏观逻辑计算 (模拟 CPI & 议息) ---
-# 假设逻辑：油价维持在 95-100 美元超过 5 天，CPI 上行压力增加 0.5%
-current_oil_price = data["WTI原油"]['Close'].iloc[-1].values[0]
-avg_oil_5d = data["WTI原油"]['Close'].tail(5).mean().values[0]
-
-# --- 3. UI 布局与分析 ---
-col1, col2 = st.columns([1, 1])
-
-with col1:
-    st.subheader("实时行情可视化")
-    st.line_chart(data["WTI原油"]['Close'], y_label="WTI Price ($)")
-    st.metric("当前 WTI 价格", f"${current_oil_price:.2f}", 
-              f"{current_oil_price - data['WTI原油']['Close'].iloc[-2].values[0]:.2f}")
-
-with col2:
-    st.subheader("🤖 Gemini 深度情感与宏观分析")
+try:
+    data_raw = fetch_financial_data()
     
-    # 构造 Prompt 给 Gemini
-    prompt = f"""
-    作为一名资深金融分析师，请根据以下数据进行分析：
-    1. 当前 WTI 原油价格为 ${current_oil_price:.2f}，过去5天均价为 ${avg_oil_5d:.2f}。
-    2. 石油企业 ETF (XLE) 当前走势反映了市场对能源股的情绪。
-    3. 结合美国当前 2026 年的宏观背景（假设 CPI 公布在即）：
-       - 如果油价持续维持在 $95-$100 左右，对下个月 CPI 数值的具体量化影响。
-       - 对美联储加息或降息概率的影响（例如：通胀压力是否会推迟降息）。
-       - 对石油公司收入及股价情绪的影响。
+    # 提取 WTI 价格
+    wti_df = data_raw["CL=F"]['Close'].dropna()
+    current_oil = float(wti_df.iloc[-1])
+    prev_oil = float(wti_df.iloc[-2])
+    avg_5d = float(wti_df.tail(5).mean())
     
-    请输出结果，包含：
-    - 【情绪指标】：（例如：买入高涨 / 观望 / 恐慌）
-    - 【详细分析】：石油价格波动对 CPI 和利率路径的传导逻辑。
-    - 【投资建议】：针对能源股和美元走势的短期预测。
+    # 提取 XLE (石油股)
+    xle_df = data_raw["XLE"]['Close'].dropna()
+    current_xle = float(xle_df.iloc[-1])
+    
+except Exception as e:
+    st.error(f"数据获取异常: {e}")
+    st.stop()
+
+# --- 4. 核心逻辑判断 (95-100美元区间) ---
+is_alert_zone = 95.0 <= current_oil <= 100.0
+price_status = "⚠️ 处于通胀敏感区间(95-100)" if is_alert_zone else "✅ 处于常规波动区间"
+
+# --- 5. UI 布局 ---
+col_l, col_r = st.columns([2, 1])
+
+with col_l:
+    st.subheader("📈 市场行情走势")
+    st.line_chart(wti_df, y_label="WTI 原油价格 ($)")
+    
+    c1, c2, c3 = st.columns(3)
+    c1.metric("WTI 当前价", f"${current_oil:.2f}", f"{current_oil - prev_oil:.2f}")
+    c2.metric("5日均价", f"${avg_5d:.2f}")
+    c3.metric("状态", "通胀高警" if is_alert_zone else "正常", delta_color="inverse")
+
+with col_r:
+    st.subheader("🤖 Gemini 宏观策略分析")
+    
+    # 构建精准的 Prompt
+    analysis_prompt = f"""
+    你是资深宏观策略师。请根据以下2026年最新数据进行分析：
+    1. 当前 WTI 原油价格: ${current_oil:.2f} (5日均价: ${avg_5d:.2f})。
+    2. 石油公司(XLE)当前价: ${current_xle:.2f}。
+    3. 特殊逻辑：{"当前油价已进入95-100美元的高危区间！" if is_alert_zone else "当前油价尚平稳。"}
+    
+    请输出以下分析报告：
+    - 【CPI 影响预测】：油价此水平对下月美国CPI的直接贡献及通胀压力。
+    - 【加息/降息概率】：基于油价引起的通胀预期，分析对美联储利率决策（加息还是降息）的影响概率。
+    - 【股价情绪建议】：显示“买入高涨”、“观望”或“减持”，并说明理由。
+    - 【石油企业收入】：高油价对能源企业财报的影响。
     """
     
-    if st.button("开始 AI 智能分析"):
-        with st.spinner("Gemini 正在分析宏观数据..."):
-            response = model.generate_content(prompt)
-            st.markdown(response.text)
+    if st.button("生成 AI 深度分析报告"):
+        with st.spinner("AI 正在解析宏观数据关联..."):
+            try:
+                response = model.generate_content(analysis_prompt)
+                st.markdown(f"### 策略报告\n{response.text}")
+            except Exception as e:
+                st.error(f"AI 生成失败，请检查 Key 有效性: {e}")
 
-# --- 4. 影响预测详情表 ---
-st.divider()
-st.subheader("宏观指标关联预测")
-impact_df = pd.DataFrame({
-    "场景": ["油价 > $95", "油价 $80-$90", "油价 < $75"],
-    "CPI 预期影响": ["大幅上涨 (+0.6%)", "温和波动", "通胀回落"],
-    "加息/降息概率": ["降息概率降低", "维持现状", "降息概率增加"],
-    "石油股情绪": ["看涨 (收入预期增加)", "中性", "看跌 (利润率压缩)"]
-})
-st.table(impact_df)
+# --- 6. 静态知识库（底部参考） ---
+st.markdown("---")
+with st.expander("📝 查看宏观指标传导逻辑参考"):
+    st.table(pd.DataFrame({
+        "指标": ["WTI > $95", "CPI 上涨", "美元加息", "美元降息"],
+        "对石油股影响": ["买入高涨 (利润空间大)", "利空 (成本上升)", "利空 (分母效应)", "利好 (估值回升)"],
+        "对宏观经济影响": ["推高通胀", "购买力下降", "抑制经济", "刺激增长"]
+    }))
