@@ -13,7 +13,7 @@ def get_alibabacloud_client():
     # 阿里云百炼兼容 OpenAI 协议
     client = OpenAI(
         api_key=api_key,
-        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        base_url="https://dashscope-intl.aliyuncs.com/api/v1",
     )
     return client
 
