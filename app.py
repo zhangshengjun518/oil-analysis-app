@@ -1,120 +1,76 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import google.generativeai as genai
+from openai import OpenAI
 
-# --- 1. 配置 Gemini API (自动兼容方案) ---
-def init_gemini():
-    try:
-        api_key = st.secrets.get("GEMINI_API_KEY")
-        if not api_key:
-            st.error("❌ 请在 Streamlit Secrets 中配置 GEMINI_API_KEY")
-            return None
-        
-        genai.configure(api_key=api_key)
-        
-        # 依次尝试不同的模型名称，解决 404 问题
-        model_names = [
-            'gemini-1.5-flash', 
-            'gemini-1.5-flash-latest', 
-            'gemini-1.5-pro', 
-            'gemini-pro'
-        ]
-        
-        for name in model_names:
-            try:
-                model = genai.GenerativeModel(name)
-                # 尝试极简调用，验证模型是否可用
-                model.generate_content("test", generation_config={"max_output_tokens": 1})
-                return model
-            except:
-                continue
-        
-        st.error("❌ 尝试了所有模型名均返回 404，请检查 API Key 权限或地域限制。")
+# --- 1. 配置 阿里云百炼 API ---
+def get_alibabacloud_client():
+    # 请在 Streamlit Secrets 中配置名为 DASHSCOPE_API_KEY 的变量
+    api_key = st.secrets.get("DASHSCOPE_API_KEY")
+    if not api_key:
         return None
-    except Exception as e:
-        st.error(f"API 初始化异常: {e}")
-        return None
+    
+    # 阿里云百炼兼容 OpenAI 协议
+    client = OpenAI(
+        api_key=api_key,
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    )
+    return client
 
-model = init_gemini()
-
-# --- 2. 页面设置 ---
+# --- 2. 页面与数据逻辑 ---
 st.set_page_config(page_title="石油宏观智能分析", layout="wide")
-st.title("🛢️ 石油价格、CPI 与宏观政策联动分析")
+st.title("🛢️ 石油价格与美国宏观经济分析系统")
 
-# --- 3. 数据抓取 (修复 yfinance 多级索引) ---
 @st.cache_data(ttl=3600)
-def get_data():
-    tickers = ["CL=F", "XLE", "DX-Y.NYB"]
-    # 强制使用特定版本兼容的下载方式
-    df = yf.download(tickers, period="1mo", interval="1d", group_by='ticker', auto_adjust=True)
-    return df
+def fetch_market_data():
+    # 抓取原油 (CL=F) 和 能源股 (XLE)
+    data = yf.download(["CL=F", "XLE"], period="1mo", interval="1d", group_by='ticker', auto_adjust=True)
+    return data
 
 try:
-    raw_data = get_data()
-    # 提取 WTI 价格
-    wti_close = raw_data["CL=F"]['Close'].dropna()
-    current_price = float(wti_close.iloc[-1])
-    last_price = float(wti_close.iloc[-2])
-    avg_5d = float(wti_close.tail(5).mean())
-    
-    # 提取 XLE 石油股
-    xle_close = raw_data["XLE"]['Close'].dropna()
-    current_xle = float(xle_close.iloc[-1])
+    market_data = fetch_market_data()
+    # 提取最新的数据点
+    oil_price = float(market_data["CL=F"]['Close'].iloc[-1])
+    oil_5d_avg = float(market_data["CL=F"]['Close'].tail(5).mean())
+    xle_price = float(market_data["XLE"]['Close'].iloc[-1])
 except Exception as e:
-    st.error(f"数据加载失败 (yfinance): {e}")
+    st.error(f"数据获取失败: {e}")
     st.stop()
 
-# --- 4. 95-100美元逻辑判断 ---
-is_high_risk = 95.0 <= current_price <= 100.0
+# --- 3. UI 展示与 95-100 美元逻辑 ---
+col1, col2 = st.columns([2, 1])
 
-# --- 5. UI 布局 ---
-col_l, col_r = st.columns([2, 1])
-
-with col_l:
-    st.subheader("📈 市场走势图 (WTI)")
-    st.line_chart(wti_close)
+with col1:
+    st.subheader("📈 市场行情走势")
+    st.line_chart(market_data["CL=F"]['Close'])
     
     m1, m2, m3 = st.columns(3)
-    m1.metric("WTI 当前价", f"${current_price:.2f}", f"{current_price - last_price:.2f}")
-    m2.metric("5日均价", f"${avg_5d:.2f}")
+    m1.metric("WTI 当前价", f"${oil_price:.2f}")
+    m2.metric("5日均价", f"${oil_5d_avg:.2f}")
     
-    if is_high_risk:
-        st.warning("⚠️ 警报：油价进入 95-100 美元区间，CPI 压力极大！")
+    # 触发你要求的警报逻辑
+    if 95.0 <= oil_price <= 100.0:
+        st.error(f"🚨 状态：通胀高警 (当前油价 ${oil_price:.2f} 处于 95-100 敏感区间)")
     else:
-        st.success("🟢 价格目前处于常规波动区间。")
+        st.success("🟢 状态：波动正常")
 
-with col_r:
-    st.subheader("🤖 Gemini 宏观策略报告")
-    
-    prompt = f"""
-    分析背景：2026年宏观经济。
-    当前数据：
-    1. WTI原油：${current_price:.2f} (5日均价：${avg_5d:.2f})。
-    2. 石油股 XLE：${current_xle:.2f}。
-    3. 特殊逻辑：{"【紧急】油价处于95-100美元，将显著拉升下月CPI预期。" if is_high_risk else "油价波动平稳。"}
-    
-    请输出：
-    - 【CPI影响】：对美国CPI的贡献度分析。
-    - 【利率预测】：对美联储加息/降息概率的推演。
-    - 【股价情绪】：明确给出“买入高涨”、“观望”或“减持”建议。
-    - 【营收传导】：对石油企业收入的影响。
-    """
-    
+with col2:
+    st.subheader("🤖 通义千问 宏观策略分析")
     if st.button("生成 AI 深度分析报告"):
-        if model:
-            with st.spinner("AI 正在根据全球宏观模型计算..."):
-                try:
-                    response = model.generate_content(prompt)
-                    st.markdown(response.text)
-                except Exception as e:
-                    st.error(f"AI 生成失败: {e}")
+        client = get_alibabacloud_client()
+        if not client:
+            st.error("请先在 Secrets 中配置 DASHSCOPE_API_KEY")
         else:
-            st.warning("API 未就绪，请检查 Secrets 配置。")
-
-# --- 6. 底部参考 ---
-st.divider()
-st.table(pd.DataFrame({
-    "指标": ["WTI > $95", "WTI < $75", "美元加息", "美元降息"],
-    "石油股情绪": ["买入高涨", "减持/观望", "利空情绪", "利好情绪"]
-}))
+            with st.spinner("百炼 AI 正在根据 2026 宏观模型推演..."):
+                try:
+                    # 使用百炼主流的 qwen-plus 或 qwen-max 模型
+                    completion = client.chat.completions.create(
+                        model="qwen-plus", 
+                        messages=[
+                            {"role": "system", "content": "你是一名资深宏观经济分析师，擅长通过原油价格推导 CPI 和美联储政策。"},
+                            {"role": "user", "content": f"WTI原油当前价: ${oil_price:.2f}，5日均价: ${oil_5d_avg:.2f}，能源股XLE价格: ${xle_price:.2f}。请分析该价格对美国CPI的传导压力，并预测美联储的政策走向。"}
+                        ],
+                    )
+                    st.markdown(completion.choices[0].message.content)
+                except Exception as e:
+                    st.error(f"分析失败: {e}")
