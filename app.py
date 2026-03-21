@@ -12,7 +12,7 @@ try:
     # 优先尝试从 Streamlit Secrets 获取
     api_key = st.secrets.get("GEMINI_API_KEY", "这里填入你的API_KEY(如果不走Secrets)")
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-1.5-flash-latest')
 except Exception as e:
     st.error(f"❌ API 配置失败: {e}")
 
