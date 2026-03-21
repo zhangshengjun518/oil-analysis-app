@@ -2,96 +2,111 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import google.generativeai as genai
-from datetime import datetime
 
-# --- 1. 安全配置 API Key ---
-# 建议通过 Streamlit Secrets 配置 GEMINI_API_KEY
-# 如果你一定要直接写死在代码里（风险自担），请取消下面一行的注释并填入：
-# API_KEY_VALUE = "你的_API_KEY" 
-try:
-    # 优先尝试从 Streamlit Secrets 获取
-    api_key = st.secrets.get("GEMINI_API_KEY", "这里填入你的API_KEY(如果不走Secrets)")
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-1.5-flash-latest')
-except Exception as e:
-    st.error(f"❌ API 配置失败: {e}")
+# --- 1. 配置 Gemini API ---
+# 解决 404 错误的关键：使用多种备选模型名称
+def init_gemini():
+    try:
+        # 从 Streamlit Secrets 获取 Key
+        api_key = st.secrets.get("GEMINI_API_KEY")
+        if not api_key:
+            st.error("❌ 未找到 API Key。请在 Streamlit Cloud 的 Settings -> Secrets 中配置 GEMINI_API_KEY。")
+            return None
+        
+        genai.configure(api_key=api_key)
+        
+        # 尝试使用最兼容的名称：gemini-1.5-flash-latest
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        return model
+    except Exception as e:
+        st.error(f"API 配置异常: {e}")
+        return None
 
-# --- 2. 页面美化设置 ---
-st.set_page_config(page_title="石油-CPI宏观决策系统", layout="wide")
-st.title("📊 石油价格与美国宏观经济分析系统")
-st.markdown("---")
+model = init_gemini()
 
-# --- 3. 数据抓取模块 ---
+# --- 2. 页面设置 ---
+st.set_page_config(page_title="石油宏观智能分析", layout="wide")
+st.title("🛢️ 石油价格、CPI 与宏观政策联动分析")
+
+# --- 3. 数据抓取 (处理多级索引问题) ---
 @st.cache_data(ttl=3600)
-def fetch_financial_data():
-    # 抓取 WTI原油 (CL=F), 能源ETF (XLE), 美元指数 (DX-Y.NYB)
-    symbols = ["CL=F", "XLE", "DX-Y.NYB"]
-    df = yf.download(symbols, period="1mo", interval="1d", group_by='ticker')
+def get_data():
+    # 抓取原油 (CL=F)、能源股 (XLE)、美元指数 (DX-Y.NYB)
+    tickers = ["CL=F", "XLE", "DX-Y.NYB"]
+    df = yf.download(tickers, period="1mo", interval="1d", group_by='ticker')
     return df
 
 try:
-    data_raw = fetch_financial_data()
+    raw_data = get_data()
+    # 提取 WTI 价格数据
+    wti_close = raw_data["CL=F"]['Close'].dropna()
+    current_price = float(wti_close.iloc[-1])
+    last_price = float(wti_close.iloc[-2])
+    avg_5d = float(wti_close.tail(5).mean())
     
-    # 提取 WTI 价格
-    wti_df = data_raw["CL=F"]['Close'].dropna()
-    current_oil = float(wti_df.iloc[-1])
-    prev_oil = float(wti_df.iloc[-2])
-    avg_5d = float(wti_df.tail(5).mean())
-    
-    # 提取 XLE (石油股)
-    xle_df = data_raw["XLE"]['Close'].dropna()
-    current_xle = float(xle_df.iloc[-1])
-    
+    # 提取能源股 XLE 数据
+    xle_close = raw_data["XLE"]['Close'].dropna()
+    current_xle = float(xle_close.iloc[-1])
 except Exception as e:
-    st.error(f"数据获取异常: {e}")
+    st.error(f"数据加载失败: {e}")
     st.stop()
 
-# --- 4. 核心逻辑判断 (95-100美元区间) ---
-is_alert_zone = 95.0 <= current_oil <= 100.0
-price_status = "⚠️ 处于通胀敏感区间(95-100)" if is_alert_zone else "✅ 处于常规波动区间"
+# --- 4. 核心逻辑：95-100美元区间判断 ---
+is_high_risk = 95.0 <= current_price <= 100.0
 
 # --- 5. UI 布局 ---
-col_l, col_r = st.columns([2, 1])
+col_left, col_right = st.columns([2, 1])
 
-with col_l:
-    st.subheader("📈 市场行情走势")
-    st.line_chart(wti_df, y_label="WTI 原油价格 ($)")
+with col_left:
+    st.subheader("📈 市场走势图")
+    st.line_chart(wti_close)
     
-    c1, c2, c3 = st.columns(3)
-    c1.metric("WTI 当前价", f"${current_oil:.2f}", f"{current_oil - prev_oil:.2f}")
-    c2.metric("5日均价", f"${avg_5d:.2f}")
-    c3.metric("状态", "通胀高警" if is_alert_zone else "正常", delta_color="inverse")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("WTI 当前价", f"${current_price:.2f}", f"{current_price - last_price:.2f}")
+    m2.metric("5日均价", f"${avg_5d:.2f}")
+    
+    # 状态显示
+    if is_high_risk:
+        st.warning("⚠️ 当前油价处于 95-100 美元区间，通胀风险极高！")
+    else:
+        st.success("🟢 当前价格波动处于常规区间。")
 
-with col_r:
-    st.subheader("🤖 Gemini 宏观策略分析")
+with col_right:
+    st.subheader("🤖 Gemini 宏观决策分析")
     
-    # 构建精准的 Prompt
-    analysis_prompt = f"""
-    你是资深宏观策略师。请根据以下2026年最新数据进行分析：
-    1. 当前 WTI 原油价格: ${current_oil:.2f} (5日均价: ${avg_5d:.2f})。
-    2. 石油公司(XLE)当前价: ${current_xle:.2f}。
-    3. 特殊逻辑：{"当前油价已进入95-100美元的高危区间！" if is_alert_zone else "当前油价尚平稳。"}
+    # 编写 Prompt
+    prompt = f"""
+    分析背景：2026年宏观经济环境。
+    当前数据：
+    1. WTI原油价格：${current_price:.2f}（5日均价：${avg_5d:.2f}）。
+    2. 石油股 XLE 价格：${current_xle:.2f}。
+    3. 特殊警报：{"【重要】油价已进入95-100美元高位区间，直接威胁CPI目标。" if is_high_risk else "油价目前波动尚在可控范围。"}
     
-    请输出以下分析报告：
-    - 【CPI 影响预测】：油价此水平对下月美国CPI的直接贡献及通胀压力。
-    - 【加息/降息概率】：基于油价引起的通胀预期，分析对美联储利率决策（加息还是降息）的影响概率。
-    - 【股价情绪建议】：显示“买入高涨”、“观望”或“减持”，并说明理由。
-    - 【石油企业收入】：高油价对能源企业财报的影响。
+    请输出以下分析内容：
+    - 【CPI 影响预测】：预测此油价对下月美国 CPI 数值的贡献度。
+    - 【加息/降息概率】：基于油价引起的通胀预期，推演美联储下一次会议的加息或降息概率变化。
+    - 【股价情绪建议】：明确给出“买入高涨”、“观望”或“减持”的标签，并解释原因。
+    - 【企业收益】：高油价对能源企业营收和利润率的传导逻辑。
     """
     
     if st.button("生成 AI 深度分析报告"):
-        with st.spinner("AI 正在解析宏观数据关联..."):
-            try:
-                response = model.generate_content(analysis_prompt)
-                st.markdown(f"### 策略报告\n{response.text}")
-            except Exception as e:
-                st.error(f"AI 生成失败，请检查 Key 有效性: {e}")
+        if model:
+            with st.spinner("AI 正在根据全球宏观模型计算..."):
+                try:
+                    response = model.generate_content(prompt)
+                    st.markdown(response.text)
+                except Exception as e:
+                    st.error(f"AI 生成失败: {e}")
+        else:
+            st.warning("请先配置有效的 API Key。")
 
-# --- 6. 静态知识库（底部参考） ---
-st.markdown("---")
-with st.expander("📝 查看宏观指标传导逻辑参考"):
-    st.table(pd.DataFrame({
-        "指标": ["WTI > $95", "CPI 上涨", "美元加息", "美元降息"],
-        "对石油股影响": ["买入高涨 (利润空间大)", "利空 (成本上升)", "利空 (分母效应)", "利好 (估值回升)"],
-        "对宏观经济影响": ["推高通胀", "购买力下降", "抑制经济", "刺激增长"]
-    }))
+# --- 6. 逻辑传导参考表 ---
+st.divider()
+st.subheader("📊 宏观指标传导逻辑参考")
+ref_df = pd.DataFrame({
+    "油价水平": ["<$75", "$80-$90", "$95-$100", ">$110"],
+    "CPI 预测": ["回落", "稳定", "显著上升", "极度通胀"],
+    "政策预期": ["降息概率大", "维持利率", "暂停降息/加息", "激进加息"],
+    "能源股情绪": ["中性/减持", "中性", "买入高涨", "高位获利结清"]
+})
+st.table(ref_df)
